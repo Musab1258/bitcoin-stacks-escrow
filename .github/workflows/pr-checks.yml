@@ -1,0 +1,37 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  pr_checks:
+    name: PR Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update && sudo apt install -y curl jq
+          curl -fsSL https://clarinet.io/install.sh | sh
+          echo "$HOME/.clarinet/bin" >> $GITHUB_PATH
+
+      - name: Run Linter
+        run: clarinet check
+
+      - name: Run Tests
+        run: clarinet test
+
+      - name: Ensure Formatting
+        run: clarinet fmt --check
+
+      - name: Verify PR Title & Description
+        uses: JulienKode/pull-request-name-linter-action@v0.4.0
+        with:
+          regex: '^(feat|fix|refactor|docs|test|chore): .+'
+          flags: 'gm'
