@@ -1,51 +1,50 @@
 (define-constant escrow-timeout 1000)
 
 (define-map escrow-contracts
-  (principal principal)
-  (tuple (party1 principal) (party2 principal) (arbiter principal) (amount uint) (released bool)))
+  {id: uint}
+  (tuple (party1 principal) (party2 principal) (arbiter principal) (amount uint) (released bool) (timestamp uint)))
 
-;; Create a new escrow contract
-(define-public (create-escrow (party1 principal) (party2 principal) (arbiter principal) (amount uint))
+(define-private (validate-party (escrow-id uint) (caller principal))
+  (let ((escrow (map-get? escrow-contracts {id: escrow-id})))
+    (match escrow
+      escrow-data
+        (if (or (is-eq caller (get party1 escrow-data))
+                (is-eq caller (get party2 escrow-data))
+                (is-eq caller (get arbiter escrow-data)))
+            (ok true)
+            (err "Caller is not authorized for this escrow"))
+      (err "Escrow contract not found"))))
+
+(define-public (create-escrow (escrow-id uint) (party1 principal) (party2 principal) (arbiter principal) (amount uint))
   (begin
-    (map-set escrow-contracts party1
-      (tuple (party1 party1) (party2 party2) (arbiter arbiter) (amount amount) (released false)))
+    (asserts! (is-none (map-get? escrow-contracts {id: escrow-id})) (err "Escrow ID already exists"))
+    (map-set escrow-contracts {id: escrow-id}
+      (tuple (party1 party1) (party2 party2) (arbiter arbiter) (amount amount) (released false) (timestamp (block-height))))
     (ok "Escrow created successfully")))
 
-;; Deposit funds into escrow
-(define-public (deposit (party principal) (amount uint))
+(define-public (release-funds (escrow-id uint))
   (begin
-    (let ((escrow (map-get? escrow-contracts party)))
-      (match escrow
-        (some (tuple (party1 p1) (party2 p2) (arbiter arb) (amount a) (released r)))
-        (begin
-          (map-set escrow-contracts party (tuple (party1 p1) (party2 p2) (arbiter arb) (amount (+ a amount)) (released r)))
-          (ok "Deposit successful"))
-        (none (err "Escrow does not exist"))))))
+    (asserts! (is-ok (validate-party escrow-id tx-sender)) (err "Unauthorized access"))
+    (let ((escrow (unwrap-panic (map-get escrow-contracts {id: escrow-id}))))
+      (asserts! (not (get released escrow)) (err "Funds have already been released"))
+      (map-set escrow-contracts {id: escrow-id} (merge escrow (tuple (released true))))
+      (ok (tuple (message "Funds released successfully") (to (get party2 escrow)) (amount (get amount escrow)))))))
 
-;; Release funds to the agreed party
-(define-public (release-funds (party principal))
+(define-public (refund (escrow-id uint))
   (begin
-    (let ((escrow (map-get? escrow-contracts party)))
-      (match escrow
-        (some (tuple (party1 p1) (party2 p2) (arbiter arb) (amount a) (released r)))
-        (begin
-          (if (is-true released)
-              (ok "Funds already released")
-              (begin
-                (map-set escrow-contracts party (tuple (party1 p1) (party2 p2) (arbiter arb) (amount a) (released true)))
-                (ok "Funds released successfully"))))
-        (none (err "Escrow does not exist"))))))
+    (asserts! (is-ok (validate-party escrow-id tx-sender)) (err "Unauthorized access"))
+    (let ((escrow (unwrap-panic (map-get escrow-contracts {id: escrow-id}))))
+      (asserts! (>= (- (block-height) (get timestamp escrow)) escrow-timeout) (err "Escrow timeout not reached"))
+      (asserts! (not (get released escrow)) (err "Funds have already been released"))
+      (map-delete escrow-contracts {id: escrow-id})
+      (ok (tuple (message "Funds refunded successfully") (to (get party1 escrow)) (amount (get amount escrow)))))))
 
-;; Resolve a dispute and release funds to the correct party
-(define-public (resolve-dispute (arbiter principal) (winner-party principal))
+;; New reclaim function
+(define-public (reclaim-funds (escrow-id uint))
   (begin
-    (let ((escrow (map-get? escrow-contracts winner-party)))
-      (match escrow
-        (some (tuple (party1 p1) (party2 p2) (arbiter arb) (amount a) (released r)))
-        (begin
-          (if (is-eq arbiter arb)
-              (begin
-                (map-set escrow-contracts winner-party (tuple (party1 p1) (party2 p2) (arbiter arb) (amount a) (released true)))
-                (ok "Dispute resolved and funds released"))
-              (err "Only arbiter can resolve dispute")))
-        (none (err "Escrow does not exist"))))))
+    (asserts! (is-ok (validate-party escrow-id tx-sender)) (err "Unauthorized access"))
+    (let ((escrow (unwrap-panic (map-get escrow-contracts {id: escrow-id}))))
+      (asserts! (>= (- (block-height) (get timestamp escrow)) escrow-timeout) (err "Escrow timeout not reached"))
+      (asserts! (not (get released escrow)) (err "Funds have already been released"))
+      (map-delete escrow-contracts {id: escrow-id})
+      (ok (tuple (message "Funds reclaimed successfully") (to (get party1 escrow)) (amount (get amount escrow)))))))
